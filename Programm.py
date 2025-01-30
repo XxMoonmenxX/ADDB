@@ -39,6 +39,7 @@ class ImprovedPartsApp:
         finally:
             conn.close()
         self.load_data()  # Обновляем таблицу после добавления
+
     def search_parts(self):
         """Поиск запчастей по введенному тексту"""
         search_term = self.search_entry.get().strip()
@@ -46,7 +47,6 @@ class ImprovedPartsApp:
             self.load_data(search_term)
         else:
             self.load_data()
-
 
     def prompt_create_or_open_db(self):
         """Предлагает пользователю создать новую базу данных или открыть существующую"""
@@ -86,10 +86,26 @@ class ImprovedPartsApp:
                 conn.close()
 
     def delete_part(self):
+        """Удаляет выбранную запчасть из базы данных"""
         selected = self.tree.selection()
         if not selected:
             messagebox.showwarning("Ошибка", "Выберите запчасть для удаления")
             return
+
+        part_id = self.tree.item(selected[0], 'values')[0]  # Получаем ID выбранной записи
+
+        if messagebox.askyesno("Подтверждение", "Вы уверены, что хотите удалить эту запчасть?"):
+            conn = sqlite3.connect(self.current_db)
+            cursor = conn.cursor()
+            try:
+                cursor.execute('DELETE FROM parts WHERE id = ?', (part_id,))
+                conn.commit()
+                messagebox.showinfo("Успех", "Запчасть успешно удалена")
+            except sqlite3.Error as e:
+                messagebox.showerror("Ошибка БД", f"Не удалось удалить запчасть: {str(e)}")
+            finally:
+                conn.close()
+            self.load_data()  # Обновляем таблицу после удаления
 
     def paste_row(self, event=None):
         try:
@@ -118,8 +134,6 @@ class ImprovedPartsApp:
             except Exception as e:
                 messagebox.showerror("Ошибка", f"Не удалось скопировать: {str(e)}")
 
-
-
     def paste_to_search(self, event=None):
         try:
             text = clipboard.paste() or self.root.clipboard_get()
@@ -144,10 +158,51 @@ class ImprovedPartsApp:
                 messagebox.showerror("Ошибка копирования", str(e))
 
     def edit_part(self):
+        """Редактирует выбранную запчасть"""
         selected = self.tree.selection()
         if not selected:
             messagebox.showwarning("Ошибка", "Выберите запчасть для редактирования")
             return
+
+        part_id = self.tree.item(selected[0], 'values')[0]  # Получаем ID выбранной записи
+
+        conn = sqlite3.connect(self.current_db)
+        cursor = conn.cursor()
+        try:
+            cursor.execute('SELECT * FROM parts WHERE id = ?', (part_id,))
+            part = cursor.fetchone()
+            dialog = AddEditDialog(self.root, part)
+            self.root.wait_window(dialog.top)
+            if dialog.values:
+                self.update_part(part_id, dialog.values)
+        except sqlite3.Error as e:
+            messagebox.showerror("Ошибка БД", f"Не удалось загрузить данные: {str(e)}")
+        finally:
+            conn.close()
+
+    def update_part(self, part_id, values):
+        """Обновляет запчасть в базе данных"""
+        conn = sqlite3.connect(self.current_db)
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE parts SET
+                    name = ?,
+                    part_number = ?,
+                    quantity = ?,
+                    price = ?,
+                    supplier = ?,
+                    description = ?,
+                    date_added = ?
+                WHERE id = ?
+            ''', (*values, part_id))
+            conn.commit()
+            self.load_data()
+            messagebox.showinfo("Успех", "Изменения сохранены")
+        except sqlite3.IntegrityError:
+            messagebox.showerror("Ошибка", "Артикул должен быть уникальным!")
+        finally:
+            conn.close()
 
     def create_widgets(self):
         # Меню
@@ -177,10 +232,9 @@ class ImprovedPartsApp:
         # Поиск
         search_frame = ttk.Frame(self.root)
         search_frame.pack(fill=tk.X, padx=5, pady=5)
-
+        # Кнопки для поля поиска
         ttk.Button(search_frame, text="⌨", command=self.copy_search_text, width=3).pack(side=tk.LEFT, padx=(0, 2))
         ttk.Button(search_frame, text="📋", command=self.paste_to_search, width=3).pack(side=tk.LEFT, padx=(0, 2))
-
         self.search_entry = ttk.Entry(search_frame)
         self.search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
         ttk.Button(search_frame, text="Поиск", command=self.search_parts).pack(side=tk.LEFT, padx=2)
@@ -210,7 +264,7 @@ class ImprovedPartsApp:
 
         for col, width in columns:
             self.tree.heading(col, text=col)
-            self.tree.column(col, width=width, anchor=tk.W)
+            self.tree.column(col, width=width, anchor=tk.CENTER)
 
         scroll = ttk.Scrollbar(self.root, orient=tk.VERTICAL, command=self.tree.yview)
         self.tree.configure(yscroll=scroll.set)
@@ -245,7 +299,8 @@ class ImprovedPartsApp:
             messagebox.showwarning("Ошибка", "База данных не выбрана")
             return
 
-        self.tree.delete(*self.tree.get_children())
+        self.tree.delete(*self.tree.get_children())  # Очистить дерево
+
         conn = sqlite3.connect(self.current_db)
         try:
             cursor = conn.cursor()
@@ -262,12 +317,12 @@ class ImprovedPartsApp:
                     WHERE name LIKE ? 
                     OR part_number LIKE ? 
                     OR description LIKE ?
-                ''', (f'%{search_term}%', f'%{search_term}%', f'%{search_term}%'))
+                 ''', (f'%{search_term}%', f'%{search_term}%', f'%{search_term}%'))
             else:
                 cursor.execute('SELECT * FROM parts')
 
             for row in cursor.fetchall():
-                self.tree.insert('', tk.END, values=row)
+                self.tree.insert('', tk.END, values=row)  # Добавить найденные данные в дерево
         finally:
             conn.close()
 
@@ -339,6 +394,7 @@ class ImprovedPartsApp:
                 messagebox.showinfo("Успех", f"Новая база данных создана:\n{file_path}")
             except Exception as e:
                 messagebox.showerror("Ошибка", f"Ошибка при создании базы:\n{str(e)}")
+
 
     def add_part(self):
         """Добавляет новую запчасть"""
@@ -417,7 +473,5 @@ class AddEditDialog:
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = ImprovedPartsApp(root)
-    root.mainloop()
     app = ImprovedPartsApp(root)
     root.mainloop()
