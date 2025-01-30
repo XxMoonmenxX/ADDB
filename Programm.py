@@ -1,47 +1,163 @@
 import sqlite3
 from datetime import datetime
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 import clipboard
-
-DATABASE_NAME = 'parts_inventory.db'
+import os
 
 
 class ImprovedPartsApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("учет запчастей")
+        self.root.title("Учет запчастей")
         self.root.geometry("1400x700")
 
-        self.create_db()
+        self.current_db = None  # Текущая база данных
         self.create_widgets()
-        self.load_data()
         self.setup_context_menu()
 
-    def create_db(self):
-        conn = sqlite3.connect(DATABASE_NAME)
-        cursor = conn.cursor()
+        # При запуске программы предлагаем создать или открыть базу данных
+        self.prompt_create_or_open_db()
 
+    def save_part(self, values):
+        """Сохраняет запчасть в базу данных"""
+        if not self.current_db:
+            messagebox.showwarning("Ошибка", "Сначала создайте или откройте базу данных")
+            return
+
+        conn = sqlite3.connect(self.current_db)
+        cursor = conn.cursor()
         try:
             cursor.execute('''
-                CREATE TABLE IF NOT EXISTS parts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL,
-                    part_number TEXT UNIQUE,
-                    quantity INTEGER,
-                    price REAL,
-                    supplier TEXT,
-                    description TEXT,
-                    date_added TEXT
-                )
-            ''')
+                INSERT INTO parts (name, part_number, quantity, price, supplier, description, date_added)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', values)
             conn.commit()
+            messagebox.showinfo("Успех", "Запчасть успешно добавлена")
         except sqlite3.Error as e:
-            messagebox.showerror("Ошибка БД", str(e))
+            messagebox.showerror("Ошибка БД", f"Не удалось добавить запчасть: {str(e)}")
         finally:
             conn.close()
+        self.load_data()  # Обновляем таблицу после добавления
+    def search_parts(self):
+        """Поиск запчастей по введенному тексту"""
+        search_term = self.search_entry.get().strip()
+        if search_term:
+            self.load_data(search_term)
+        else:
+            self.load_data()
+
+
+    def prompt_create_or_open_db(self):
+        """Предлагает пользователю создать новую базу данных или открыть существующую"""
+        choice = messagebox.askyesnocancel(
+            "База данных",
+            "Открыть существующую базу данных? (Нет — создать новую)"
+        )
+        if choice is None:  # Пользователь нажал "Отмена"
+            self.root.destroy()
+        elif choice:  # Пользователь выбрал "Открыть"
+            self.open_database()
+        else:  # Пользователь выбрал "Создать"
+            self.save_database_as()
+
+    def create_db(self):
+        """Создает новую базу данных, если она не существует"""
+        if self.current_db and not os.path.exists(self.current_db):
+            conn = sqlite3.connect(self.current_db)
+            cursor = conn.cursor()
+            try:
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS parts (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL,
+                        part_number TEXT UNIQUE,
+                        quantity INTEGER,
+                        price REAL,
+                        supplier TEXT,
+                        description TEXT,
+                        date_added TEXT
+                    )
+                ''')
+                conn.commit()
+            except sqlite3.Error as e:
+                messagebox.showerror("Ошибка БД", str(e))
+            finally:
+                conn.close()
+
+    def delete_part(self):
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("Ошибка", "Выберите запчасть для удаления")
+            return
+
+    def paste_row(self, event=None):
+        try:
+            pasted_data = (clipboard.paste() or self.root.clipboard_get()).split('\t')
+
+            if len(pasted_data) >= 7:
+                # Обработка числовых полей
+                pasted_data[2] = int(float(pasted_data[2]))  # quantity
+                pasted_data[3] = float(pasted_data[3])  # price
+
+                dialog = AddEditDialog(self.root, pasted_data)
+                self.root.wait_window(dialog.top)
+                if dialog.values:
+                    self.save_part(dialog.values)
+                    self.load_data()
+        except Exception as e:
+            messagebox.showerror("Ошибка вставки", f"Некорректные данные: {str(e)}")
+
+    def copy_search_text(self, event=None):
+        text = self.search_entry.get()
+        if text:
+            try:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(text)
+                clipboard.copy(text)
+            except Exception as e:
+                messagebox.showerror("Ошибка", f"Не удалось скопировать: {str(e)}")
+
+
+
+    def paste_to_search(self, event=None):
+        try:
+            text = clipboard.paste() or self.root.clipboard_get()
+            if text:
+                self.search_entry.delete(0, tk.END)
+                self.search_entry.insert(0, text)
+                self.search_parts()
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось вставить: {str(e)}")
+
+    def copy_row(self, event=None):
+        selected = self.tree.selection()
+        if selected:
+            try:
+                values = self.tree.item(selected[0], 'values')
+                text = '\t'.join(map(str, values))
+
+                self.root.clipboard_clear()
+                self.root.clipboard_append(text)
+                clipboard.copy(text)
+            except Exception as e:
+                messagebox.showerror("Ошибка копирования", str(e))
+
+    def edit_part(self):
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("Ошибка", "Выберите запчасть для редактирования")
+            return
 
     def create_widgets(self):
+        # Меню
+        menubar = tk.Menu(self.root)
+        filemenu = tk.Menu(menubar, tearoff=0)
+        filemenu.add_command(label="Открыть", command=self.open_database)
+        filemenu.add_command(label="Сохранить как...", command=self.save_database_as)
+        menubar.add_cascade(label="Файл", menu=filemenu)
+        self.root.config(menu=menubar)
+
         # Панель инструментов
         toolbar = ttk.Frame(self.root)
         toolbar.pack(fill=tk.X, padx=5, pady=5)
@@ -58,11 +174,10 @@ class ImprovedPartsApp:
         for text, command in buttons:
             ttk.Button(toolbar, text=text, command=command).pack(side=tk.LEFT, padx=2)
 
-        # Поиск с кнопками буфера
+        # Поиск
         search_frame = ttk.Frame(self.root)
         search_frame.pack(fill=tk.X, padx=5, pady=5)
 
-        # Кнопки для поля поиска
         ttk.Button(search_frame, text="⌨", command=self.copy_search_text, width=3).pack(side=tk.LEFT, padx=(0, 2))
         ttk.Button(search_frame, text="📋", command=self.paste_to_search, width=3).pack(side=tk.LEFT, padx=(0, 2))
 
@@ -70,7 +185,6 @@ class ImprovedPartsApp:
         self.search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
         ttk.Button(search_frame, text="Поиск", command=self.search_parts).pack(side=tk.LEFT, padx=2)
 
-        # Горячие клавиши для поля поиска
         self.search_entry.bind("<Control-c>", lambda e: self.copy_search_text())
         self.search_entry.bind("<Control-v>", lambda e: self.paste_to_search())
         self.search_entry.bind("<Control-C>", lambda e: self.copy_search_text())
@@ -109,7 +223,6 @@ class ImprovedPartsApp:
         self.context_menu.add_command(label="Вставить", command=self.paste_row)
         self.tree.bind("<Button-3>", self.show_context_menu)
 
-        # Обработка горячих клавиш для любой раскладки
         self.root.bind_all("<Control-KeyPress>", self.check_hotkeys)
 
     def check_hotkeys(self, event):
@@ -117,9 +230,9 @@ class ImprovedPartsApp:
         ctrl = (event.state & 0x4) != 0
 
         if ctrl:
-            if keycode == 54:  # Физическая клавиша C
+            if keycode == 54:  # C
                 self.copy_row()
-            elif keycode == 55:  # Физическая клавиша V
+            elif keycode == 55:  # V
                 self.paste_row()
 
     def show_context_menu(self, event):
@@ -128,10 +241,21 @@ class ImprovedPartsApp:
             self.context_menu.tk_popup(event.x_root, event.y_root)
 
     def load_data(self, search_term=None):
+        if not self.current_db:
+            messagebox.showwarning("Ошибка", "База данных не выбрана")
+            return
+
         self.tree.delete(*self.tree.get_children())
-        conn = sqlite3.connect(DATABASE_NAME)
+        conn = sqlite3.connect(self.current_db)
         try:
             cursor = conn.cursor()
+
+            # Проверка существования таблицы parts
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='parts'")
+            if not cursor.fetchone():
+                messagebox.showwarning("Ошибка", "Таблица 'parts' не найдена в базе данных")
+                return
+
             if search_term:
                 cursor.execute('''
                     SELECT * FROM parts 
@@ -147,139 +271,85 @@ class ImprovedPartsApp:
         finally:
             conn.close()
 
+    def open_database(self):
+        """Открывает выбранную базу данных"""
+        file_path = filedialog.askopenfilename(
+            filetypes=[("Базы данных", "*.db"), ("Все файлы", "*.*")]
+        )
+        if file_path:
+            try:
+                conn = sqlite3.connect(file_path)
+                cursor = conn.cursor()
+
+                # Проверка существования таблицы parts
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='parts'")
+                if not cursor.fetchone():
+                    # Если таблица отсутствует, создаем её
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS parts (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            name TEXT NOT NULL,
+                            part_number TEXT UNIQUE,
+                            quantity INTEGER,
+                            price REAL,
+                            supplier TEXT,
+                            description TEXT,
+                            date_added TEXT
+                        )
+                    ''')
+                    conn.commit()
+
+                conn.close()
+                self.current_db = file_path
+                self.load_data()
+                messagebox.showinfo("Успех", "База данных успешно загружена")
+            except Exception as e:
+                messagebox.showerror("Ошибка", f"Не удалось открыть базу:\n{str(e)}")
+
+    def save_database_as(self):
+        """Создает новую базу данных и сохраняет ее"""
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".db",
+            filetypes=[("Базы данных", "*.db"), ("Все файлы", "*.*")]
+        )
+        if file_path:
+            try:
+                # Создаем пустую базу данных
+                conn = sqlite3.connect(file_path)
+                cursor = conn.cursor()
+
+                # Создаем таблицу parts
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS parts (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL,
+                        part_number TEXT UNIQUE,
+                        quantity INTEGER,
+                        price REAL,
+                        supplier TEXT,
+                        description TEXT,
+                        date_added TEXT
+                    )
+                ''')
+                conn.commit()
+                conn.close()
+
+                self.current_db = file_path
+                self.load_data()
+                messagebox.showinfo("Успех", f"Новая база данных создана:\n{file_path}")
+            except Exception as e:
+                messagebox.showerror("Ошибка", f"Ошибка при создании базы:\n{str(e)}")
+
     def add_part(self):
+        """Добавляет новую запчасть"""
+        if not self.current_db:
+            messagebox.showwarning("Ошибка", "Сначала создайте или откройте базу данных")
+            return
+
         dialog = AddEditDialog(self.root)
         self.root.wait_window(dialog.top)
         if dialog.values:
             self.save_part(dialog.values)
-
-    def edit_part(self):
-        selected = self.tree.selection()
-        if not selected:
-            messagebox.showwarning("Ошибка", "Выберите запчасть для редактирования")
-            return
-
-        part_id = self.tree.item(selected[0], 'values')[0]
-        conn = sqlite3.connect(DATABASE_NAME)
-        cursor = conn.cursor()
-        cursor.execute('SELECT * FROM parts WHERE id = ?', (part_id,))
-        part = cursor.fetchone()
-        conn.close()
-
-        dialog = AddEditDialog(self.root, part)
-        self.root.wait_window(dialog.top)
-        if dialog.values:
-            self.update_part(part_id, dialog.values)
-
-    def delete_part(self):
-        selected = self.tree.selection()
-        if not selected:
-            messagebox.showwarning("Ошибка", "Выберите запчасть для удаления")
-            return
-
-        if messagebox.askyesno("Подтверждение", "Удалить выбранную запчасть?"):
-            part_id = self.tree.item(selected[0], 'values')[0]
-            conn = sqlite3.connect(DATABASE_NAME)
-            cursor = conn.cursor()
-            cursor.execute('DELETE FROM parts WHERE id = ?', (part_id,))
-            conn.commit()
-            conn.close()
-            self.load_data()
-
-    def search_parts(self):
-        search_term = self.search_entry.get()
-        self.load_data(search_term)
-
-    def copy_row(self, event=None):
-        selected = self.tree.selection()
-        if selected:
-            try:
-                values = self.tree.item(selected[0], 'values')
-                text = '\t'.join(map(str, values))
-
-                self.root.clipboard_clear()
-                self.root.clipboard_append(text)
-                clipboard.copy(text)
-            except Exception as e:
-                messagebox.showerror("Ошибка копирования", str(e))
-
-    def paste_row(self, event=None):
-        try:
-            pasted_data = (clipboard.paste() or self.root.clipboard_get()).split('\t')
-
-            if len(pasted_data) >= 7:
-                # Обработка числовых полей
-                pasted_data[2] = int(float(pasted_data[2]))  # quantity
-                pasted_data[3] = float(pasted_data[3])  # price
-
-                dialog = AddEditDialog(self.root, pasted_data)
-                self.root.wait_window(dialog.top)
-                if dialog.values:
-                    self.save_part(dialog.values)
-                    self.load_data()
-        except Exception as e:
-            messagebox.showerror("Ошибка вставки", f"Некорректные данные: {str(e)}")
-
-    def copy_search_text(self, event=None):
-        text = self.search_entry.get()
-        if text:
-            try:
-                self.root.clipboard_clear()
-                self.root.clipboard_append(text)
-                clipboard.copy(text)
-            except Exception as e:
-                messagebox.showerror("Ошибка", f"Не удалось скопировать: {str(e)}")
-
-    def paste_to_search(self, event=None):
-        try:
-            text = clipboard.paste() or self.root.clipboard_get()
-            if text:
-                self.search_entry.delete(0, tk.END)
-                self.search_entry.insert(0, text)
-                self.search_parts()
-        except Exception as e:
-            messagebox.showerror("Ошибка", f"Не удалось вставить: {str(e)}")
-
-    def save_part(self, values):
-        conn = sqlite3.connect(DATABASE_NAME)
-        try:
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT INTO parts (
-                    name, part_number, quantity, 
-                    price, supplier, description, date_added
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', values)
-            conn.commit()
-            self.load_data()
-            messagebox.showinfo("Успех", "Данные сохранены!")
-        except sqlite3.IntegrityError:
-            messagebox.showerror("Ошибка", "Артикул должен быть уникальным!")
-        finally:
-            conn.close()
-
-    def update_part(self, part_id, values):
-        conn = sqlite3.connect(DATABASE_NAME)
-        try:
-            cursor = conn.cursor()
-            cursor.execute('''
-                UPDATE parts SET
-                    name = ?,
-                    part_number = ?,
-                    quantity = ?,
-                    price = ?,
-                    supplier = ?,
-                    description = ?,
-                    date_added = ?
-                WHERE id = ?
-            ''', (*values, part_id))
-            conn.commit()
-            self.load_data()
-            messagebox.showinfo("Успех", "Изменения сохранены")
-        except sqlite3.IntegrityError:
-            messagebox.showerror("Ошибка", "Артикул должен быть уникальным!")
-        finally:
-            conn.close()
 
 
 class AddEditDialog:
@@ -347,5 +417,7 @@ class AddEditDialog:
 
 if __name__ == "__main__":
     root = tk.Tk()
+    app = ImprovedPartsApp(root)
+    root.mainloop()
     app = ImprovedPartsApp(root)
     root.mainloop()
